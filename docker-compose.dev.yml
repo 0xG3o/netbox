@@ -1,0 +1,156 @@
+# ============================================
+# NetBox Development Environment
+# ============================================
+# Simple Docker setup for NetBox development
+# Usage: make dev
+
+services:
+  # ==================
+  # PostgreSQL Database
+  # ==================
+  postgres:
+    image: postgres:15-alpine
+    container_name: netbox-postgres
+    env_file:
+      - .env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-netbox}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - netbox-internal
+
+  # ==================
+  # Redis for Tasks
+  # ==================
+  redis:
+    image: redis:7-alpine
+    container_name: netbox-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - netbox-internal
+
+  # ==================
+  # Redis for Cache
+  # ==================
+  redis-cache:
+    image: redis:7-alpine
+    container_name: netbox-redis-cache
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - netbox-internal
+
+  # ==================
+  # NetBox Development Server
+  # ==================
+  netbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: netbox-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - ENVIRONMENT=development
+    volumes:
+      # Mount source code for live editing
+      - .:/opt/netbox:rw
+      # Persistent data
+      - netbox_media:/opt/netbox/netbox/media
+      - netbox_reports:/opt/netbox/netbox/reports
+      - netbox_scripts:/opt/netbox/netbox/scripts
+    ports:
+      - "9003:8000"
+    networks:
+      - netbox-internal
+    command: >
+      sh -c "
+        echo '============================================' &&
+        echo '🛠  NetBox Development Environment' &&
+        echo '============================================' &&
+        echo 'Waiting for database...' &&
+        python manage.py migrate &&
+        python manage.py collectstatic --no-input &&
+        python manage.py shell -c \"from django.contrib.auth import get_user_model; User = get_user_model(); User.objects.filter(username='admin').exists() or User.objects.create_superuser('admin', 'admin@example.com', 'admin')\" &&
+        echo '' &&
+        echo '✓ Development server starting...' &&
+        echo '  URL: http://localhost:9003' &&
+        echo '  User: admin / Pass: admin' &&
+        echo '============================================' &&
+        python manage.py runserver 0.0.0.0:8000
+      "
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "showmigrations", "--plan"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ==================
+  # NetBox Worker
+  # ==================
+  netbox-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: netbox-worker-dev
+    depends_on:
+      netbox:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - ENVIRONMENT=development
+    volumes:
+      - .:/opt/netbox:rw
+      - netbox_media:/opt/netbox/netbox/media
+      - netbox_reports:/opt/netbox/netbox/reports
+      - netbox_scripts:/opt/netbox/netbox/scripts
+    networks:
+      - netbox-internal
+    command: python manage.py rqworker
+    restart: unless-stopped
+
+# ==================
+# Volumes
+# ==================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  netbox_media:
+    driver: local
+  netbox_reports:
+    driver: local
+  netbox_scripts:
+    driver: local
+
+# ==================
+# Networks
+# ==================
+networks:
+  netbox-internal:
+    driver: bridge

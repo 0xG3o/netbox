@@ -1,0 +1,47 @@
+FROM python:3.12-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    git \
+    curl \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/netbox
+
+# Copy NetBox source code
+COPY . /opt/netbox
+
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Install development tools
+RUN pip install --no-cache-dir \
+    ipython \
+    django-debug-toolbar \
+    django-extensions
+
+# Install custom plugins (from netbox/plugins/)
+RUN for plugin in /opt/netbox/plugins/*/; do \
+        if [ -f "$plugin/setup.py" ]; then \
+            echo "Installing plugin: $plugin"; \
+            pip install -e "$plugin"; \
+        fi \
+    done
+
+# Create necessary directories
+RUN mkdir -p /opt/netbox/netbox/media \
+    /opt/netbox/netbox/reports \
+    /opt/netbox/netbox/scripts
+
+# Expose port
+EXPOSE 8000
+
+# Set working directory to netbox subdirectory
+WORKDIR /opt/netbox/netbox
+
+# Development entrypoint - will be overridden by docker-compose
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
